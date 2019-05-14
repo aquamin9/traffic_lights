@@ -135,14 +135,14 @@ class TrafficLight(object):
 
         
         
-        #Time Threshold for finding out which position  was the last one
-        self.threshold = 0.5
+        #Time Threshold for finding out which position  was the last one (3ms)
+        self.threshold = 0.000001
         #
         self.bookkeeping_time = 0.1
         #'duckiebot':timestamp_secs will be saved in dictionaries of chargers 
         self.chargers ={'charger1':{},'charger2':{}}
         
-        self.sub_poses = rospy.Subscriber("~poses",AprilTagDetection,self.cbPoses)
+        self.sub_poses = rospy.Subscriber("/poses_acquisition/poses",AprilTagDetection,self.cbPoses)
 
         
         self.timer_updateChargerSizes=rospy.Timer(rospy.Duration(self.updateChargerSizeTime),self.updateChargerSizes)
@@ -157,7 +157,7 @@ class TrafficLight(object):
         rospy.loginfo("Green Time is: "+str(self.green_time))
     def lightToggle(self,light_number,light_color):
         
-        rospy.loginfo("lightToggle function started")
+        #rospy.loginfo("lightToggle function started")
 
         if(self.light_state_dict[light_number] == True):
             self.led.setRGB(light_number, self.black_color)
@@ -175,7 +175,7 @@ class TrafficLight(object):
 
             self.light_state_dict[light_number] = True
             #traffic light is switched on 
-        rospy.loginfo("lightToggle function ended")
+        #rospy.loginfo("lightToggle function ended")
 
 
         
@@ -279,21 +279,27 @@ class TrafficLight(object):
         
 
     def updateLastNeighbor(self,event):
-        current_time = rospy.get_rostime().secs
+        current_time = rospy.get_rostime().to_sec()
+
 
         for botID in self.movingAprilTags.keys():
             #If the last time stamp is not updated for a long time, take action according to the last neighbor
+            rospy.loginfo(str(abs(current_time-self.movingAprilTags[botID]['timestamp']))+ " time difference "+ str(botID))
             if(abs(current_time-self.movingAprilTags[botID]['timestamp'])> self.threshold):
                 if(self.movingAprilTags[botID]['neighbor'] == self.direction_CH1):
+                    rospy.loginfo(str(botID)+" on its way to charger 1")
                     self.chargers['charger1'][botID] = self.movingAprilTags[botID]['timestamp']
                     self.deleteBot(botID) #deletes bot from self.movingAprilTags       
-                elif(self.movingAprilTags[botID]['direction'] == self.direction_CH2):
+                elif(self.movingAprilTags[botID]['neighbor'] == self.direction_CH2):
+                    rospy.loginfo(str(botID)+" on its way to charger 2")
                     self.chargers['charger2'][botID] = self.movingAprilTags[botID]['timestamp']
                     self.deleteBot(botID) #deletes bot from self.movingAprilTags
                 #self.entrance      normally self.exit    
-                elif(self.movingAprilTags[botID]['direction'] == self.entrance):
+                elif(self.movingAprilTags[botID]['neighbor'] == self.entrance):
+                    rospy.loginfo(str(botID)+" on its way to exit")
                     self.releasePlace(botID)
                     self.deleteBot(botID)
+        rospy.loginfo("CHARGERS "+str(self.chargers))
 
 
     def releasePlace(self,tagID):
@@ -308,6 +314,7 @@ class TrafficLight(object):
 
                 try:
                     del self.chargers[charger][tagID]
+                    rospy.loginfo(str(tagID)+" released charger"+str(charger))
                 except KeyError :
                     rospy.loginfo("["+self.node_name+"] tagID "+ str(tagID)+" could not be found in "+str(charger)+". Charger has "+str(bots))
     
@@ -329,7 +336,7 @@ class TrafficLight(object):
     #Finds the neighbor april tag to the given moving april tag
     def NearestNeighbor(self,tagPose):
         nearestTag = ''
-        nearestPosition = 16000
+        nearestPosition = 16000000
         #{'tagID':{'position':Point,'neighbor':tagIDNeighbor,'timestamp':time,'charger':chargerID}}
         for tagIDNeighbor, Neighbor in self.staticAprilTags.items():
             #absolute value of distance between a static tag and amoving tag squared 
@@ -345,8 +352,9 @@ class TrafficLight(object):
 
 
     def cbPoses(self,msg):
-        rospy.loginfo("["+self.node_name+"]"+" cbPoses message arrived: TagId: "+str(msg.tag_id)+" center: "+str(msg.center))
-        
+        #rospy.loginfo("["+self.node_name+"]"+" cbPoses message arrived: TagId: "+str(msg.tag_id)+" center: "+str(msg.center))
+        current_time = rospy.get_rostime().to_sec()
+
         tagID = str(msg.tag_id)
         #3D Point just using x and y to save the pixels of the center of an april tag
         tagPose = Point()
@@ -354,10 +362,7 @@ class TrafficLight(object):
         tagPose.y = msg.center[1]
         tagPose.z = 0
 
-        #Time Stamps in seconds 
-        timestamp_poses =  msg.Header.stamp.secs
-
-        current_time = rospy.get_time().secs
+        
 
         if(tagID in self.staticAprilTags.keys()):
             self.staticAprilTags[tagID]['position'] = tagPose
@@ -365,10 +370,10 @@ class TrafficLight(object):
         
         if(self.isDuckieBot(tagID)):
             self.movingAprilTags[tagID]['position'] = tagPose
-            self.movingAprilTags[tagID]['timestamp'] = timestamp_poses
+            self.movingAprilTags[tagID]['timestamp'] = current_time
             self.movingAprilTags[tagID]['neighbor'] = self.NearestNeighbor(tagPose)
 
-            rospy.loginfo("["+self.node_name+"]"+"Duckiebot "+tagID+" is near to "+self.movingAprilTags[tagID]['neighbor'])
+            #rospy.loginfo("["+self.node_name+"]"+"Duckiebot "+tagID+" is near to "+self.movingAprilTags[tagID]['neighbor'])
 
        
  #-----------------------------Charger Management END-----------------------------#   
