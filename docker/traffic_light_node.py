@@ -133,6 +133,17 @@ class TrafficLight(object):
         self.green_time = msg.data
         rospy.loginfo("Green Time is: "+str(self.green_time))
 
+        
+        
+        #Time Threshold for finding out which position  was the last one (3ms)
+        self.threshold = 0.000001
+        #
+        self.bookkeeping_time = 0.1
+        #'duckiebot':timestamp_secs will be saved in dictionaries of chargers 
+        self.chargers ={'charger1':{},'charger2':{}}
+        
+        self.sub_poses = rospy.Subscriber("/poses_acquisition/poses",AprilTagDetection,self.cbPoses)
+        
     def cbcharging_1_switch(self,msg):
         self.charger1_size =  msg.data
 
@@ -161,6 +172,7 @@ class TrafficLight(object):
             self.light_state_dict[light_number] = True
             #traffic light is switched on 
         #rospy.loginfo("lightToggle function ended")
+
 
     #decision making where duckiebot at entrance should go
     def cbChargingManager(self, event):
@@ -251,6 +263,72 @@ class TrafficLight(object):
         color, number = self.getMSG(msg)
         rospy.loginfo("color "+color+ "number : "+ str(number) )
 
+ #-----------------------------LED Management END-----------------------------#   
+
+ #-----------------------------Charger Management START-----------------------------# 
+    def DebugLists(self,event):
+        rospy.loginfo("STATIC AT:"+ str(self.staticAprilTags))
+        rospy.loginfo("MOVING AT:"+str(self.movingAprilTags))
+
+    def updateChargerSizes(self,event):
+        for charger in self.chargers.keys():
+            if(charger == 'charger1'):
+                self.current_size1 = len(self.chargers[charger].keys())
+            elif(charger == 'charger2'):
+                self.current_size1 = len(self.chargers[charger].keys())
+            else:
+                rospy.loginfo("["+self.node_name+"]Something unexpected has happened in updateChargerSizes")
+
+    #Delete the tagID from self.movingAprilTags dictionary
+    def deleteBot(self,tagID):
+        for botID in self.movingAprilTags.keys():
+            if(tagID == botID):
+                try:
+                    del self.movingAprilTags[tagID]
+                except KeyError:
+                    rospy.loginfo("["+self.node_name+"] tagID "+ str(tagID)+" could not be found in "+str(self.movingAprilTags)+" movingAprilTags: "+str(self.movingAprilTags))
+        
+
+    def updateLastNeighbor(self,event):
+        current_time = rospy.get_rostime().to_sec()
+
+
+        for botID in self.movingAprilTags.keys():
+            #If the last time stamp is not updated for a long time, take action according to the last neighbor
+            rospy.loginfo(str(abs(current_time-self.movingAprilTags[botID]['timestamp']))+ " time difference "+ str(botID))
+            if(abs(current_time-self.movingAprilTags[botID]['timestamp'])> self.threshold):
+                if(self.movingAprilTags[botID]['neighbor'] == self.direction_CH1):
+                    rospy.loginfo(str(botID)+" on its way to charger 1")
+                    self.chargers['charger1'][botID] = self.movingAprilTags[botID]['timestamp']
+                    self.deleteBot(botID) #deletes bot from self.movingAprilTags       
+                elif(self.movingAprilTags[botID]['neighbor'] == self.direction_CH2):
+                    rospy.loginfo(str(botID)+" on its way to charger 2")
+                    self.chargers['charger2'][botID] = self.movingAprilTags[botID]['timestamp']
+                    self.deleteBot(botID) #deletes bot from self.movingAprilTags
+                #self.entrance      normally self.exit    
+                elif(self.movingAprilTags[botID]['neighbor'] == self.entrance):
+                    rospy.loginfo(str(botID)+" on its way to exit")
+                    self.releasePlace(botID)
+                    self.deleteBot(botID)
+        rospy.loginfo("CHARGERS "+str(self.chargers))
+
+
+    def releasePlace(self,tagID):
+        #delete the tagID from self.chargers 
+
+        for charger in self.chargers.keys():
+            #List of bots in charger
+            bots = list(self.chargers[charger].keys())
+
+            #Delete the tagID from chargers dictionary
+            if(tagID in bots):
+
+                try:
+                    del self.chargers[charger][tagID]
+                    rospy.loginfo(str(tagID)+" released charger"+str(charger))
+                except KeyError :
+                    rospy.loginfo("["+self.node_name+"] tagID "+ str(tagID)+" could not be found in "+str(charger)+". Charger has "+str(bots))
+
     
     def isDuckieBot(self,tagID):
         #look up whether the april tag is owned by a duckiebot
@@ -276,8 +354,10 @@ class TrafficLight(object):
     #Finds the neighbor april tag to the given moving april tag
     def NearestNeighbor(self,tagPose):
         nearestTag = ''
-        nearestPosition = 16000
-        #{'tagID':{'Position':Point,'Neighbor':tagIDNeighbor}}.values= {'Position':Point,'Neighbor':tagIDNeighbor}
+
+        nearestPosition = 16000000
+        #{'tagID':{'position':Point,'neighbor':tagIDNeighbor,'timestamp':time,'charger':chargerID}}
+
         for tagIDNeighbor, Neighbor in self.staticAprilTags.items():
             #absolute value of distance between a static tag and amoving tag squared 
             d = (Neighbor['Position'].x -tagPose.x)**2 + (Neighbor['Position'].y -tagPose.y)**2 
@@ -301,8 +381,9 @@ class TrafficLight(object):
             
 
     def cbPoses(self,msg):
-        rospy.loginfo("["+self.node_name+"]"+" cbPoses message arrived: TagId: "+str(msg.tag_id)+" center: "+str(msg.center))
-        
+        #rospy.loginfo("["+self.node_name+"]"+" cbPoses message arrived: TagId: "+str(msg.tag_id)+" center: "+str(msg.center))
+        current_time = rospy.get_rostime().to_sec()
+
         tagID = str(msg.tag_id)
         #3D Point just using x and y to save the pixels of the center of an april tag
         tagPose = Point()
@@ -310,23 +391,18 @@ class TrafficLight(object):
         tagPose.y = msg.center[1]
         tagPose.z = 0
 
-        #get the positions of the static april tags just just for the first time(be careful there might be a higher error rate)
-        #TODO:test whether the april tags are detected correctly at the first measurement
-        #{'tagID':{'Position':Point,'Neighbor':tagIDNeighbor}}.values() = {'Position':Point,'Neighbor':tagIDNeighbor}
-        if(self.isStaticTag(tagID)):
-            self.staticAprilTags[tagID]['Position'] = tagPose
+        
+
+        if(tagID in self.staticAprilTags.keys()):
+            self.staticAprilTags[tagID]['position'] = tagPose
              
         
         if(self.isDuckieBot(tagID)):
-            self.movingAprilTags[tagID]['Position'] = tagPose
-            self.movingAprilTags[tagID]['Neighbor'] = self.NearestNeighbor(tagPose)
-            
-            
-            rospy.loginfo("["+self.node_name+"]"+"Duckiebot "+tagID+" is near to "+self.movingAprilTags[tagID]['Neighbor'])
+            self.movingAprilTags[tagID]['position'] = tagPose
+            self.movingAprilTags[tagID]['timestamp'] = current_time
+            self.movingAprilTags[tagID]['neighbor'] = self.NearestNeighbor(tagPose)
 
-            #self.ChargingManager(tagID,self.movingAprilTags[tagID])
-        rospy.loginfo("static april tags: "+str(self.staticAprilTags))
-        rospy.loginfo("moving april tags: "+str(self.movingAprilTags))
+
 
         
 
