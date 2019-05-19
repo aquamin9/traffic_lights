@@ -3,7 +3,7 @@ import rospy
 from rgb_led import *
 import sys
 import time
-from std_msgs.msg import Float32, Int8
+from std_msgs.msg import Float32, Int8, Int32
 from geometry_msgs.msg import Point
 from duckietown_msgs.msg import AprilTagDetection
 from rgb_led import RGB_LED
@@ -90,7 +90,18 @@ class TrafficLight(object):
         self.sub_traffic_light_switch = rospy.Subscriber("~traffic_light_switch",String,self.cbTrafficLight_switch)
         self.sub_green_time = rospy.Subscriber("~green_time",Int8,self.cbGreenTime)
         self.timer_red = rospy.Timer(rospy.Duration(0.5*self.redlight_t),self.cbTimerRed)
+        self.charging_1_switch = rospy.Subscriber("~charging_1_switch", Int8, self.cbcharging_1_switch)
+        self.charging_2_switch = rospy.Subscriber("~charging_2_switch", Int8, self.cbcharging_2_switch)
 
+        self.charger1_capacity = 8
+        self.charger2_capacity = 8
+        self.charger1_size = 0
+        self.charger2_size = 0
+        self.charger1_size_old = self.charger1_size
+        self.charger2_size_old = self.charger2_size
+        self.charger_next_free = 2
+
+        rospy.Timer(rospy.Duration(1),self.cbChargingManager) #starting timer for ChargingManager
         #----------------------Initialization TL END----------------------#
 
         #----------------------Initialization MAINTENANCE START----------------------#
@@ -125,11 +136,8 @@ class TrafficLight(object):
         self.VehicleTags = ['400','404','405','406']
         #self.LocalizationTags =str( [obj['tag_id'] for obj in self.AprilTags if obj[tag_type] == 'Localization'])
 
-        #Chargers 
-        self.charger_capacity = 2
-        #Current amount of duckiebots in chargers 1 and 2
-        self.charger1_size = 0
-        self.charger2_size = 0
+
+
         #Update Time of charger sizes(in seconds)
         self.updateChargerSizeTime = 0.1
 
@@ -151,10 +159,17 @@ class TrafficLight(object):
 
         #----------------------Initialization MAINTENANCE END----------------------#
 
-#-----------------------------LED Management START-----------------------------#  
+    #-----------------------------LED Management START-----------------------------#  
     def cbGreenTime(self,msg):
         self.green_time = msg.data
         rospy.loginfo("Green Time is: "+str(self.green_time))
+
+    def cbcharging_1_switch(self,msg):
+        self.charger1_size =  msg.data
+
+    def cbcharging_2_switch(self,msg):
+        self.charger2_size = msg.data
+
     def lightToggle(self,light_number,light_color):
         
         #rospy.loginfo("lightToggle function started")
@@ -176,7 +191,21 @@ class TrafficLight(object):
             self.light_state_dict[light_number] = True
             #traffic light is switched on 
         #rospy.loginfo("lightToggle function ended")
-
+        
+    def cbChargingManager(self, event):
+        if((self.charger1_size != self.charger1_size_old) or (self.charger2_size != self.charger2_size_old)): #only allowing check if charger_next_free was updated
+            if(self.charger1_size > self.charger2_size): 
+                self.charger_next_free = 2
+                rospy.loginfo("[" + self.node_name + "]" + " Next free charger: " + str(self.charger_next_free))
+                self.timer_red.shutdown()
+                self.timer_red = rospy.Timer(rospy.Duration(0.5*self.redlight_t),self.cbTimerRed)
+            else :
+                self.charger_next_free = 1
+                rospy.loginfo("[" + self.node_name + "]" + " Next free charger: " + str(self.charger_next_free))
+                self.timer_red.shutdown()
+                self.timer_red = rospy.Timer(rospy.Duration(0.5*self.greenlight_t),self.cbTimerRed)
+            self.charger1_size_old = self.charger1_size
+            self.charger2_size_old = self.charger2_size
 
         
 
