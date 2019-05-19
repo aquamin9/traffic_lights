@@ -421,3 +421,4 @@ class TrafficLight(object):
 if __name__ == '__main__':
     rospy.init_node('traffic_light', anonymous=False)
     node = TrafficLight()
+    rospy.spin()
