@@ -101,7 +101,7 @@ class TrafficLight(object):
         self.charger2_size_old = self.charger2_size
         self.charger_next_free = 2
 
-        rospy.Timer(rospy.Duration(1),self.cbChargingManager) #starting timer for ChargingManager
+        rospy.Timer(rospy.Duration(0.1),self.cbChargingManager) #starting timer for ChargingManager
         #----------------------Initialization TL END----------------------#
 
         #----------------------Initialization MAINTENANCE START----------------------#
@@ -191,7 +191,7 @@ class TrafficLight(object):
             self.light_state_dict[light_number] = True
             #traffic light is switched on 
         #rospy.loginfo("lightToggle function ended")
-        
+
     def cbChargingManager(self, event):
         if((self.charger1_size != self.charger1_size_old) or (self.charger2_size != self.charger2_size_old)): #only allowing check if charger_next_free was updated
             if(self.charger1_size > self.charger2_size): 
