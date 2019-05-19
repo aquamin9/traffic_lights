@@ -122,7 +122,7 @@ class TrafficLight(object):
         self.VehicleTags =str( [obj['tag_id'] for obj in self.AprilTags if obj[tag_type] == 'Vehicle'])
         '''
         #TODO:WRITE THE AT OF DB ACCORDINGLY
-        self.VehicleTags = ['400','404']
+        self.VehicleTags = ['400','404','405','406']
         #self.LocalizationTags =str( [obj['tag_id'] for obj in self.AprilTags if obj[tag_type] == 'Localization'])
 
         #Chargers 
