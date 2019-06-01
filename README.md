@@ -1,3 +1,3 @@
 # traffic_lights
-This is the latest working traffic light container 
+This will be the repository for the maintenance traffic light server. 
 
