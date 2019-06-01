@@ -1,4 +1,3 @@
 # traffic_lights
-for master2
-test
-testesuhfAKUFD
+This is the latest working traffic light container 
+
