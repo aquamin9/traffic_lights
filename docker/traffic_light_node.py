@@ -58,29 +58,27 @@ class TrafficLight(object):
 
         #FREQUENCIES 
         # f1 = 1.9 
-        
-        self.greenlight_freq = self.protocol['signals']['CAR_SIGNAL_A_OLD']['frequency']
+        self.freq_CH1 = self.protocol['signals']['CAR_SIGNAL_A_OLD']['frequency']
         #f2 = 4
-        self.purplelight_freq = self.protocol['signals']['CAR_SIGNAL_A']['frequency']
+        self.freq_CH2 = self.protocol['signals']['CAR_SIGNAL_A']['frequency']
         #f3 = 5.7
-        self.redlight_freq =self.protocol['signals']['CAR_SIGNAL_GREEN']['frequency']
+        self.freq_CH3 =self.protocol['signals']['CAR_SIGNAL_GREEN']['frequency']
         #f4 = 7.8
-        self.yellowlight_freq = self.protocol['signals']['traffic_light_go']['frequency']
+        self.freq_CH4 = self.protocol['signals']['traffic_light_go']['frequency']
 
         #PERIODS
-        self.redlight_t = 1.0/self.redlight_freq 
-        self.greenlight_t = 1.0/self.greenlight_freq
-        self.purplelight_t = 1.0/self.purplelight_freq
-        self.yellowlight_t = 1.0/self.yellowlight_freq
+        self.T_CH1 = 1.0/self.freq_CH1
+        self.T_CH2 = 1.0/self.freq_CH2
+        self.T_CH3 = 1.0/self.freq_CH3 
+        self.T_CH4 = 1.0/self.freq_CH4
         #GREEN TIME 
         self.green_time = 30 
         rospy.loginfo("Green Time is "+ str(self.green_time))
 
 
-        #List of red lights
-        self.redlight_list = [0,2,3,4]
-        self.light_number_special = 0
-        self.light_color_special = "red"
+        #List of lights
+        self.light_list = [0,2,3,4]
+
         
         
 
@@ -88,23 +86,38 @@ class TrafficLight(object):
         self.light_state_dict = {0:False , 2:False, 3:False, 4:False}
 
         #Subscriber 
-        self.sub_traffic_light_switch = rospy.Subscriber("~traffic_light_switch",String,self.cbTrafficLight_switch)
-        self.sub_green_time = rospy.Subscriber("~green_time",Int8,self.cbGreenTime)
-        self.timer_red = rospy.Timer(rospy.Duration(0.5*self.redlight_t),self.cbTimerRed)
-        self.charging_1_switch = rospy.Subscriber("~charging_1_switch", Int8, self.cbcharging_1_switch)
-        self.charging_2_switch = rospy.Subscriber("~charging_2_switch", Int8, self.cbcharging_2_switch)
+        self.timer_CH = rospy.Timer(rospy.Duration(0.5*self.T_CH2),self.cbTimerCH)
 
+        #CHARGER CAPACITIES
         self.charger1_capacity = 2
         self.charger2_capacity = 2
+        self.charger3_capacity = 2
+        self.charger4_capacity = 2
+
+        #CHARGER SIZES
         self.charger1_size = 0
         self.charger2_size = 0
+        self.charger3_size = 0
+        self.charger4_size = 0
+
+        #Previous CHARGER SIZES
         self.charger1_size_old = self.charger1_size
         self.charger2_size_old = self.charger2_size
+        self.charger2_size_old = self.charger3_size
+        self.charger2_size_old = self.charger4_size
+
+        #Initializing the first frequency 
         self.charger_next_free = 2
+
         self.charger1_full = False 
         self.charger2_full = False
+        self.charger3_full = False
+        self.charger4_full = False
+
+
 
         rospy.Timer(rospy.Duration(1.0),self.cbChargingManager) #starting timer for ChargingManager
+        
         #----------------------Initialization TL END----------------------#
 
         #----------------------Initialization MAINTENANCE START----------------------#
@@ -112,17 +125,19 @@ class TrafficLight(object):
         #Initialize a point 
         self.initial_point = Point()
         #Initialize the localization tags according to their directional meaning (input as strings)
+        #entrance and exit ATs must be on the same tile
         self.entrance = '196'
         self.exit = '61'
-        self.direction_CH1 = '342'
-        self.direction_CH2 = '343' 
+        #These must be on different tiles
+        self.direction1 = '342'
+        self.direction2 = '343' 
 
         #Get the static April Tags (right now it is hardcoded)
         #keys : apriltag ID values: positions 
         #TODO: Find a way to get the tag ids automaticaly via a YAML file...etc
         self.staticAprilTags = {self.entrance:{'position':self.initial_point},\
-        self.direction_CH1:{'position':self.initial_point},\
-        self.direction_CH2:{'position':self.initial_point},\
+        self.direction1:{'position':self.initial_point},\
+        self.direction2:{'position':self.initial_point},\
         self.exit:{'position':self.initial_point}}
         
         #Save the moving April Tags as {'tagID':{'position':Point,'neighbor':tagIDNeighbor,'timestamp':time,'direction':directions}}
@@ -151,10 +166,10 @@ class TrafficLight(object):
         #
         self.bookkeeping_time = 1.0
         #'duckiebot':timestamp_secs will be saved in dictionaries of chargers 
-        self.chargers ={'charger1':{},'charger2':{}}
+        self.chargers ={'charger1':{},'charger2':{},'charger3':{},'charger4':{}}
+        
+        #SUBSCRIBERS
         self.sub_poses = rospy.Subscriber("/poses_acquisition/poses",AprilTagDetection,self.cbPoses)
-        #self.sub_reset = rospy.Subscriber("~reset",Bool,self.cbReset)
-        #self.resetted = False
         
         self.timer_updateChargerSizes=rospy.Timer(rospy.Duration(self.updateChargerSizeTime),self.updateChargerSizes)
         self.timer_last_neighbor = rospy.Timer(rospy.Duration(self.bookkeeping_time),self.updateLastNeighbor)
@@ -187,15 +202,54 @@ class TrafficLight(object):
     #-----------------------------TCP STOP-----------------------------#  
     '''
     #-----------------------------LED Management START-----------------------------#  
-    def cbGreenTime(self,msg):
-        self.green_time = msg.data
-        rospy.loginfo("Green Time is: "+str(self.green_time))
 
-    def cbcharging_1_switch(self,msg):
-        self.charger1_size =  msg.data
+    def cbChargingManager(self, event):
+        #rospy.loginfo("["+self.node_name+"] charger_size 1:"+str(self.charger1_size)+" charger_size_2 "+str(self.charger2_size))
+        
+        if((self.charger1_size != self.charger1_size_old) or (self.charger2_size != self.charger2_size_old) or (self.charger3_size != self.charger3_size_old) or (self.charger4_size != self.charger4_size_old)): #only allowing check if charger_next_free was updated
+            #Find the next free charger 
+            self.charger_next_free = self.findNextFreeCharger()
+        
+            #blink the LED according to the next free charger 
+            if self.charger_next_free == 1 :
+                self.timer_CH.shutdown()
+                self.timer_CH = rospy.Timer(rospy.Duration(0.5*self.T_CH1),self.cbTimerCH)
+            elif self.charger_next_free == 2 :
+                self.timer_CH.shutdown()
+                self.timer_CH = rospy.Timer(rospy.Duration(0.5*self.T_CH2),self.cbTimerCH)
+            elif self.charger_next_free == 3 :
+                self.timer_CH.shutdown()
+                self.timer_CH = rospy.Timer(rospy.Duration(0.5*self.T_CH3),self.cbTimerCH)
+            elif self.charger_next_free == 4 :
+                self.timer_CH.shutdown()
+                self.timer_CH = rospy.Timer(rospy.Duration(0.5*self.T_CH4),self.cbTimerCH)
+            else : 
+                rospy.loginfo("["+self.node_name+"]Something unexpected has happened in cbChargingManager")
 
-    def cbcharging_2_switch(self,msg):
-        self.charger2_size = msg.data
+            rospy.loginfo("["+self.node_name+"]The new next free charger is "+str(self.charger_next_free))
+            #set the charger size memories to the current value
+            self.charger1_size_old = self.charger1_size
+            self.charger2_size_old = self.charger2_size
+            self.charger2_size_old = self.charger3_size
+            self.charger2_size_old = self.charger4_size 
+
+    def findNextFreeCharger(self):
+        #Find the most unoccupied charger. This statement corresponds finding the minimal self.charger_size
+        min_charger_size = self.charger1_size
+        #TL will send DBs to the chargers 1, 2, 3 and then 4 in order
+        CH_sizes = [self.charger1_size,self.charger2_size,self.charger3_size,self.charger4_size]
+        CH_full = [self.charger1_full,self.charger2_full, self.charger3_full,self.charger4_full]
+        for i in range(0,len(CH_sizes)):
+            if CH_sizes[i] < min_charger_size and not CH_full[i]:
+                min_charger_size = CH_sizes[i] 
+        
+        if (self.charger1_full and self.charger2_full and self.charger3_full and self.charger4_full):
+            rospy.loginfo("["+self.node_name+"] All chargers are full")
+        
+
+    def cbTimerCH(self,event):
+        for light_number in self.light_list:
+            self.lightToggle(light_number,"red")
 
     def lightToggle(self,light_number,light_color):
         
@@ -208,10 +262,6 @@ class TrafficLight(object):
         else:
             if(light_color == "red"):
                 self.led.setRGB(light_number, self.red_color)
-            elif(light_color == "green"):
-                self.led.setRGB(light_number, self.red_color)
-            elif(light_color == "purple"):
-                self.led.setRGB(light_number, self.red_color)
             else:
                 self.led.setRGB(light_number, self.red_color)
 
@@ -219,145 +269,72 @@ class TrafficLight(object):
             #traffic light is switched on 
         #rospy.loginfo("lightToggle function ended")
 
-    def cbChargingManager(self, event):
-        rospy.loginfo("["+self.node_name+"] charger_size 1:"+str(self.charger1_size)+" charger_size_2 "+str(self.charger2_size))
-
-        if((self.charger1_size != self.charger1_size_old) or (self.charger2_size != self.charger2_size_old)): #only allowing check if charger_next_free was updated
-            if(self.charger1_size > self.charger2_size): 
-                self.charger_next_free = 2
-                rospy.loginfo("[" + self.node_name + "]" + " Next free charger: " + str(self.charger_next_free))
-                self.timer_red.shutdown()
-                self.timer_red = rospy.Timer(rospy.Duration(0.5*self.redlight_t),self.cbTimerRed)
-            else :
-                self.charger_next_free = 1
-                rospy.loginfo("[" + self.node_name + "]" + " Next free charger: " + str(self.charger_next_free))
-                self.timer_red.shutdown()
-                self.timer_red = rospy.Timer(rospy.Duration(0.5*self.greenlight_t),self.cbTimerRed)
-            self.charger1_size_old = self.charger1_size
-            self.charger2_size_old = self.charger2_size
-
-        
-
-    def cbTimerRed(self,event):
-        for light_number in self.redlight_list:
-            self.lightToggle(light_number,"red")
-
-    def cbTimerSpecial(self,event):
-        self.lightToggle(self.light_number_special,self.light_color_special)
-    
-    def cbTrafficLight_switch(self,msg):
-        rospy.loginfo("cbTrafficlight start")
-
-        #get message string
-        #color is a string and number is an integer 
-        color, number = self.getMSG(msg)
-        self.light_number_special = number
-        self.light_color_special = color
-
-        rospy.loginfo("published: "+color+" "+str(number))
-
-        #remove the light which should blink differently
-        
-        if(number in self.redlight_list): 
-            self.redlight_list.remove(number)
-        
-        
-
-        #kill the old timer 
-        self.timer_red.shutdown()
-        rospy.loginfo("timer_red killed")
-
-        #start two new timers 
-        #get color frequency and set timer  
-        if(color == "green"):
-            self.timer_special = rospy.Timer(rospy.Duration(0.5*self.greenlight_t),self.cbTimerSpecial)
-        elif(color == "purple"):
-            self.timer_special = rospy.Timer(rospy.Duration(0.5*self.purplelight_t),self.cbTimerSpecial)
-        else:
-            self.timer_special = rospy.Timer(rospy.Duration(0.5*self.yellowlight_t),self.cbTimerSpecial)
-        
-        #timer_special is the timer of the light which will blink differently than the other ones 
-        self.timer_others = rospy.Timer(rospy.Duration(0.5*self.redlight_t),self.cbTimerRed)
-        rospy.loginfo("timer_special and timer_others started")
-
-        #wait for self.green_time seconds
-        rospy.sleep(rospy.Duration(45))
-
-        self.timer_special.shutdown()
-        self.timer_others.shutdown()
-        rospy.loginfo("timer_special and timer_others killed")
-
-        #put the number back into the list and sort the list 
-        self.redlight_list.append(number)
-        self.redlight_list.sort()
-
-        self. timer_red = rospy.Timer(rospy.Duration(0.5*self.redlight_t),self.cbTimerRed)
-        rospy.loginfo("timer_red started")
-
-        rospy.loginfo("cbTrafficlight end ")
-        
-
-    def getMSG(self,msg):#TODO: extract "" from the message string 
-        #msg should be "#NUMBER#COLOR#"
-
-        tmp = str(msg.data).split("#")
-        number = int(tmp[1])
-        color = tmp[2]
-        return color, number 
-
-    def cbDebug(self,msg):
-        rospy.loginfo(str(msg))
-        color, number = self.getMSG(msg)
-        rospy.loginfo("color "+color+ "number : "+ str(number) )
 
  #-----------------------------LED Management END-----------------------------#   
 
  #-----------------------------Charger Management START-----------------------------# 
- #for debug purposes
-    '''
-    def cbReset(self,msg):
-        if(msg.data == True):
-            self.staticAprilTags = {self.entrance:{'position':self.initial_point},\
-                self.direction_CH1:{'position':self.initial_point},\
-                self.direction_CH2:{'position':self.initial_point}}
-            self.movingAprilTags = defaultdict(dict)
-            self.chargers ={'charger1':{},'charger2':{}}
-    '''
 
 
     def DebugLists(self,event):
+        rospy.loginfo("###########################")
         rospy.loginfo("STATIC AT:"+ str(self.staticAprilTags))
         rospy.loginfo("MOVING AT:"+str(self.movingAprilTags))
         rospy.loginfo("CHARGERS "+str(self.chargers))
+        rospy.loginfo("Charger1_size: "+str(self.charger1_size)+" charger1_full: "+str(self.charger1_full))
+        rospy.loginfo("Charger2_size: "+str(self.charger2_size)+" charger2_full: "+str(self.charger2_full))
+        rospy.loginfo("Charger3_size: "+str(self.charger3_size)+" charger3_full: "+str(self.charger3_full))
+        rospy.loginfo("Charger4_size: "+str(self.charger4_size)+" charger4_full: "+str(self.charger4_full))
+        rospy.loginfo("Next Free Charger: "+str(self.charger_next_free))
 
 
     def updateChargerSizes(self,event):
         for charger in self.chargers.keys():
             if(charger == 'charger1'):
                 self.charger1_size = int(len(self.chargers[charger].keys()))
+
+                if(self.charger1_size == self.charger1_capacity):
+                    self.charger1_full = True
+                elif( self.charger1_size < self.charger1_capacity):
+                    self.charger1_full = False
+
             elif(charger == 'charger2'):
                 self.charger2_size = int(len(self.chargers[charger].keys()))
+
+                if(self.charger2_size == self.charger2_capacity):
+                    self.charger2_full = True
+                elif( self.charger2_size < self.charger2_capacity):
+                    self.charger2_full = False
+
+            elif(charger == 'charger3'):
+                self.charger3_size = int(len(self.chargers[charger].keys()))
+
+                if(self.charger3_size == self.charger3_capacity):
+                    self.charger3_full = True
+                elif( self.charger3_size < self.charger3_capacity):
+                    self.charger3_full = False
+
+            elif(charger == 'charger4'):
+                self.charger4_size = int(len(self.chargers[charger].keys()))
+
+                if(self.charger4_size == self.charger4_capacity):
+                    self.charger4_full = True
+                elif( self.charger4_size < self.charger4_capacity):
+                    self.charger4_full = False
+
+
             else:
                 rospy.loginfo("["+self.node_name+"]Something unexpected has happened in updateChargerSizes")
 
-        if(self.charger1_size == self.charger1_capacity):
-            self.charger1_full = True 
-        elif(self.charger1_size < self.charger1_capacity):
-            self.charger1_full = False 
 
-        if(self.charger2_size == self.charger2_capacity):
-            self.charger2_full =True
-        elif(self.charger2_size < self.charger2_capacity):
-            self.charger2_full =False
-        #rospy.loginfo("["+self.node_name+"] Charger_1 full ? "+str(self.charger1_full)+" Charger_2 full ? "+str(self.charger2_full))
 
 
     #Delete the tagID from self.movingAprilTags dictionary
-    def deleteBot(self,tagID):
+    def deleteMovingBot(self,tagID):
         for botID in self.movingAprilTags.keys():
             if(tagID == botID):
                 try:
                     del self.movingAprilTags[tagID]
+                    rospy.loginfo("["+self.node_name+"] "+str(botID)+" is deleted from self.movingAprilTags")
                 except KeyError:
                     rospy.loginfo("["+self.node_name+"] tagID "+ str(tagID)+" could not be found in "+str(self.movingAprilTags)+" movingAprilTags: "+str(self.movingAprilTags))
         
@@ -369,28 +346,50 @@ class TrafficLight(object):
         for botID in self.movingAprilTags.keys():
             #If the last time stamp is not updated for a long time, take action according to the last neighbor
             rospy.loginfo(str(abs(current_time-self.movingAprilTags[botID]['timestamp']))+ " time difference "+ str(botID))
+
             if(abs(current_time-self.movingAprilTags[botID]['timestamp'])> self.threshold):
-                if(self.movingAprilTags[botID]['neighbor'] == self.direction_CH1):
-                    rospy.loginfo(str(botID)+" on its way to charger 1")
-                    self.chargers['charger1'][botID] = self.movingAprilTags[botID]['timestamp']
-                    self.deleteBot(botID) #deletes bot from self.movingAprilTags       
-                elif(self.movingAprilTags[botID]['neighbor'] == self.direction_CH2):
-                    rospy.loginfo(str(botID)+" on its way to charger 2")
-                    self.chargers['charger2'][botID] = self.movingAprilTags[botID]['timestamp']
-                    self.deleteBot(botID) #deletes bot from self.movingAprilTags
-                #self.entrance      normally self.exit    
-                elif((self.movingAprilTags[botID]['neighbor'] == self.entrance or self.movingAprilTags[botID]['neighbor'] == self.exit) and (botID in list(self.chargers['charger1'].keys()) or botID in list(self.chargers['charger2'].keys()))):
-                    rospy.loginfo(str(botID)+" on its way to exit")
-                    self.releasePlace(botID)
-                    self.deleteBot(botID)
-                #TODO:Test this part 
-                elif self.movingAprilTags[botID]['neighbor'] == self.entrance or self.movingAprilTags[botID]['neighbor'] == self.exit  : 
-                    rospy.loginfo("["+self.node_name+"] The last neighbor of "+str(botID)+" was the entrance tag "+str(self.entrance))
-                    rospy.loginfo("["+self.node_name+"] Deleting "+str(botID)+" from self.movingtags")
-                    self.deleteBot(botID)
-                    if botID in list(self.chargers['charger1'].keys()) or botID in list(self.chargers['charger2'].keys()): 
-                        rospy.loginfo("["+self.node_name+"] Deleting "+str(botID)+" from self.chargers")
-                        self.releasePlace(botID)
+
+                #FIRST:@entrance or @exit 
+                #LAST:@direction1
+                if (self.movingAprilTags[botID]['last_neighbor'] == self.direction1) and (self.movingAprilTags[botID]['first_neighbor'] == self.entrance or self.movingAprilTags[botID]['first_neighbor'] == self.exit):
+                    rospy.loginfo(str(botID)+" on WAY 1")
+                    #self.chargers['charger1'][botID] = self.movingAprilTags[botID]['timestamp']
+                    #self.deleteMovingBot(botID) #deletes bot from self.movingAprilTags     
+
+                #FIRST:@entrance or @exit 
+                #LAST:@direction2
+                elif(self.movingAprilTags[botID]['last_neighbor'] == self.direction2) and (self.movingAprilTags[botID]['first_neighbor'] == self.entrance or self.movingAprilTags[botID]['first_neighbor'] == self.exit):
+                    rospy.loginfo(str(botID)+" on WAY 2")
+                    #self.chargers['charger2'][botID] = self.movingAprilTags[botID]['timestamp']
+                    #self.deleteMovingBot(botID) #deletes bot from self.movingAprilTags
+
+                #FIRST:@direction1 or @direction2
+                #LAST:@entrance or @exit 
+                elif (self.movingAprilTags[botID]['last_neighbor'] == self.entrance or self.movingAprilTags[botID]['last_neighbor'] == self.exit) and (self.movingAprilTags[botID]['first_neighbor'] == self.direction2 or self.movingAprilTags[botID]['first_neighbor'] == self.direction1) :
+                    rospy.loginfo(str(botID)+" on WAY EXIT")
+                    self releaseChargerSpot(botID)
+                    self.deleteMovingBot(botID)
+                
+                #Some undesired states
+
+                #FIRST:@entrance or @exit
+                #LAST:@entrance or @exit 
+                elif (self.movingAprilTags[botID]['last_neighbor'] == self.entrance or self.movingAprilTags[botID]['last_neighbor'] == self.exit) and (self.movingAprilTags[botID]['first_neighbor'] == self.entrance or self.movingAprilTags[botID]['first_neighbor'] == self.exit) : 
+                    rospy.loginfo("["+self.node_name+"] The Tag ID "+str(botID)+" is seen on the same tile at the first and last apperance. This should not be the case. Please check that the ground AprilTags are well positioned and the Duckiebot was not driving too fast")
+                    self.deleteMovingBot(botID)
+
+                #FIRST = LAST
+                elif(self.movingAprilTags[botID]['last_neighbor'] == self.movingAprilTags[botID]['first_neighbor']):
+                    rospy.loginfo("[+"self.node_name+"] The Duckiebot with AT "+str(botID)+" may have stuck on way "+str(self.movingAprilTags[botID]['last_neighbor']))
+                    rospy.loginfo("[+"self.node_name+"] Check whether the ground april tags are well positioned.")
+                    self.deleteMovingBot(botID)
+                    
+                #FIRST:@direction1 or direction2
+                #LAST:@direction1 or direction2
+                elif(self.movingAprilTags[botID]['first_neighbor'] == self.direction1 or self.movingAprilTags[botID]['last_neighbor'] == self.direction2) and (self.movingAprilTags[botID]['first_neighbor'] == self.direction2 or self.movingAprilTags[botID]['last_neighbor'] == self.direction1))
+                    rospy.loginfo("[+"self.node_name+"] Check whether the ground april tags are well positioned.")
+                    rospy.loginfo("[+"self.node_name+"] There might be an issue with the intersection control in duckiebot")
+                    self.deleteMovingBot(botID)
 
                 else : 
                     rospy.loginfo("["+self.node_name+"] Something unexpected has heppend in updateLastNeighbor")
@@ -398,7 +397,7 @@ class TrafficLight(object):
 
 
 
-    def releasePlace(self,tagID):
+    def releaseChargerSpot(self,tagID):
         #delete the tagID from self.chargers 
 
         for charger in self.chargers.keys():
@@ -465,9 +464,13 @@ class TrafficLight(object):
              
         
         if(self.isDuckieBot(tagID)):
+            if tagID not in list(movingAprilTags.keys()) :
+                self.movingAprilTags[tagID]['first_neighbor'] = self.NearestNeighbor(tagPose)
+
+
             self.movingAprilTags[tagID]['position'] = tagPose
             self.movingAprilTags[tagID]['timestamp'] = current_time
-            self.movingAprilTags[tagID]['neighbor'] = self.NearestNeighbor(tagPose)
+            self.movingAprilTags[tagID]['last_neighbor'] = self.NearestNeighbor(tagPose)
 
             #rospy.loginfo("["+self.node_name+"]"+"Duckiebot "+tagID+" is near to "+self.movingAprilTags[tagID]['neighbor'])
 
